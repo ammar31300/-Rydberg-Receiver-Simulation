@@ -1,203 +1,137 @@
-# Rydberg Receiver Simulation & Open Quantum System Solver
+Rydberg Receiver Simulation & Open Quantum System Solver
+A modular Python framework for simulating Rydberg-atom electrometry, coherent spectroscopy, and open quantum-system dynamics. It connects atomic-structure and transition calculations from ARC (Alkali Rydberg Calculator) with steady-state density-matrix calculations in QuTiP, supporting workflows from atomic-state and decay ledgers to EIT spectra and RF-field readout.
 
-A modular, first-principles Python framework for **Rydberg-atom-based radio-frequency (RF) and microwave electrometry, quantum sensing, and coherent spectroscopy**.
+The repository is organized as a small set of cooperating modules: define states and drives, generate excitation and decay data, then solve the driven dissipative system. It is intended for reproducible numerical exploration; results remain dependent on the validity of the selected basis, atomic inputs, and physical approximations.
 
-The engine couples the **Alkali-Rydberg-Calculator (ARC)** with **QuTiP** to deliver an end-to-end physics pipeline: from fundamental atomic fine-structure calculations, blackbody-radiation (BBR) transition rates, and dipole couplings, to steady-state density-matrix solutions of the **Lindblad Master Equation** with Doppler broadening and laser phase noise.
+Physics Conventions & Modeling Principles
+Rydberg electrometry commonly uses electromagnetically induced transparency (EIT) and Autler–Townes (AT) splitting. A typical ladder connects a ground state, an intermediate excited state, and a Rydberg state; an additional RF-coupled state can extend the chain for electrometry.
 
----
-
-## 🔬 Physics Conventions & Modeling Principles
-
-Atomic electrometry using Rydberg states relies on **Electromagnetically Induced Transparency (EIT)** and **Autler-Townes (AT) splitting**. Accurate metrological simulation demands strict tracking of population loss, phase coherence, and thermal effects.
-
-```
-       |3> Rydberg State (e.g., 40D_5/2)
+       |3> Rydberg state (e.g., 40D5/2)
         ^
-        |  Coupling Laser (Blue, ~480 nm) or RF Drive
+        | Coupling laser or RF drive
         v
-       |2> Intermediate State (e.g., 5P_3/2)
+       |2> Intermediate state (e.g., 5P3/2)
         ^
-        |  Probe Laser (IR, ~780 nm)
+        | Probe laser
         v
-       |1> Ground State (e.g., 5S_1/2)
-```
+       |1> Ground state (e.g., 5S1/2)
+Basis, selection rules, and units
+States are represented in the uncoupled fine-structure basis $|n,l,j,m_j\rangle$ for alkali atoms with electron spin $s=1/2$. Adjacent electric-dipole transitions are checked against the applicable angular-momentum and polarization conditions, including $\Delta l=\pm1$, $|\Delta j|\leq1$, and $\Delta m_j=q$, where $q\in{-1,0,+1}$. The quantization axis and polarization convention must be used consistently throughout a simulation.
 
-### 1. State Basis & Selection Rules
-- Evaluated in the uncoupled fine-structure basis $|n, l, j, m_j\rangle$ for alkali species ($s = 1/2$).
-- Enforces strict electric-dipole (E1) selection rules between adjacent drives:
-  $$\Delta l = \pm 1, \quad |\Delta j| \le 1, \quad \Delta m_j = q \in \{-1, 0, +1\}$$
-- Quantization axis is fixed; field polarization indices $q$ reference this quantization axis directly.
+Population-decay rates $\Gamma$ are expressed in $\mathrm{s}^{-1}$ and are not multiplied by $2\pi$. Rabi frequencies and Hamiltonian detunings are angular frequencies in $\mathrm{rad,s^{-1}}$; scan axes and reported spectra use cycle frequency in Hz (often displayed in MHz). With signed detunings $\Delta_i$ and $s_i=\mathrm{sgn}(E_{i+1}-E_i)$, the rotating-frame diagonal terms follow $H_{jj}/\hbar=-\sum_{i<j}s_i\Delta_i$, and adjacent couplings are $H_{j,j+1}/\hbar=-\Omega_j/2$.
 
-### 2. Units, Rates & Angular Frequencies
-- **Incoherent Population Rates ($\Gamma$):** Computed strictly in **$\text{s}^{-1}$** (decay rates $1/\tau$). They are **never** multiplied by $2\pi$.
-- **Rabi Frequencies ($\Omega$) & Detunings ($\Delta$):** Hamiltonian matrices and cumulative rotation phases are expressed in angular units ($\text{rad}\cdot\text{s}^{-1}$), while laser scans and spectra report cycle frequencies ($\text{Hz}$ / $\text{MHz}$).
-- **Phase Gauges & Hamiltonian Detunings:** For an open $N$-state coupling chain driven with signed detunings $\Delta_i$ and sign-indicators $s_i = \mathrm{sgn}(E_{\text{target}} - E_{\text{source}})$, the cumulative rotation transformation sets:
-  $$H_{jj} / \hbar = -\sum_{i < j} s_i \Delta_i, \qquad H_{j, j+1} / \hbar = -\frac{1}{2}\Omega_j$$
+Decay, phase diffusion, and Doppler averaging
+ARC provides routines and data for calculating single- and two-atom properties, including level structure and transition strengths; this project uses it as an atomic-physics input rather than treating a truncated model as a complete atom (ARC documentation). The thermal lifetime budget separates spontaneous decay from blackbody-radiation contributions: $\Gamma_{\mathrm{total}}(T)=\Gamma_{\mathrm{spont}}+\Gamma_{\mathrm{BBR}}(T)$. Decay branches are resolved over the target magnetic-sublevel manifold. When channels leave the simulated basis, the solver requires a total-rate budget unless the user explicitly opts into the truncated closed-basis approximation. An optional external return state approximates repopulation and should be interpreted as a modeling assumption, not a resolved reservoir.
 
-### 3. Dissipator Channels & Lifetime Closure
-- **Spontaneous vs. BBR Rates:** Total radiative loss is partitioned at cell temperature $T$:
-  $$\Gamma_{\text{total}}(T) = \Gamma_{\text{spont}} (T=0) + \Gamma_{\text{BBR}}(T)$$
-- **Magnetic Sublevel Branching:** Fine-structure manifold rates from ARC are resolved into specific $|n, l, j, m_j\rangle \rightarrow |n', l', j', m_j'\rangle$ channels by projecting transition dipoles over the **entire** target manifold (avoiding artificial renormalization over truncated model bases).
-- **Lifetime Budget:** Unmodeled decay channels outside the active $N$-level basis are tracked via a global lifetime budget ($\Gamma_{\mathrm{ext}} = \tau^{-1}_{\mathrm{total}} - \sum \Gamma_{\mathrm{modeled}}$), with optional repopulation back into a chosen reservoir/ground state.
+For a drive with Lorentzian linewidth $\Delta\nu_i$ in Hz, the phase-diffusion collapse operator acts on downstream states, $C_i=\sqrt{2\pi\Delta\nu_i}\sum_{k>i}|k\rangle\langle k|$. This encodes phase-noise dephasing across multi-link coherences. One-dimensional Doppler averaging uses Gauss–Hermite quadrature over $v_z\sim\mathcal{N}(0,k_BT/M)$; optical detunings shift by $-p_i v_z/\lambda_i$, while RF wave-vector effects are neglected. Increase the quadrature-point count and check convergence, particularly for narrow resonances. The model is one-dimensional; polarization and beam geometry remain the caller’s responsibility.
 
-### 4. Non-Markovian Laser Phase Diffusion & Doppler Convolution
-- **Laser Phase Noise:** Each coherent drive with Lorentzian linewidth $\Delta\nu_{\mathrm{FWHM}}$ (in $\text{Hz}$) yields a Lindblad collapse operator acting diagonally on all downstream states:
-  $$C_i = \sqrt{2\pi \Delta\nu_i} \sum_{k > i} |k\rangle\langle k|$$
-  This ensures that multi-photon coherence damping scales properly across multi-link chains.
-- **1D Maxwell-Boltzmann Doppler Averaging:** Convolves the atomic velocity distribution $v_z \sim \mathcal{N}(0, k_B T / M)$ using Gauss-Hermite quadrature:
-  $$\Delta_{\mathrm{eff}, i}(v_z) = \Delta_i - (\mathbf{k}_i \cdot \hat{\mathbf{z}}) v_z = \Delta_i - \frac{p_i}{\lambda_i} v_z \qquad (p_i \in \{-1, +1\}, \; k_{\mathrm{RF}} \approx 0)$$
+Architecture
+├── Rydberg_parameters.py   # State/drive data models, validation, and plotting helpers
+├── Rydberg_lifetime.py     # ARC-based lifetime and thermal-rate analysis
+├── Rydberg_ladder.py       # Ladder validation and excitation/decay ledgers
+├── Rydberg_solver.py       # Hamiltonian, collapse operators, and steady-state solver
+├── requirements.txt        # Project dependencies
+└── README.md               # Project documentation
+Module	Main API	Responsibility
+Rydberg_parameters.py	QuantumState, LaserParameter, create_subplot	Validates quantum numbers, optical/RF drive parameters, and plotting helpers.
+Rydberg_lifetime.py	RydbergLifetimeAnalyzer	Calculates state lifetimes and thermal decay contributions; supports convergence checks.
+Rydberg_ladder.py	RydbergLadderSystem	Builds excitation and incoherent ledgers and verifies transition constraints.
+Rydberg_solver.py	EIT_builder, Hamil_builder, collapse_op, dephase	Constructs the Hamiltonian and dissipators, optionally averages over velocity, and returns steady-state coherences.
+EIT_builder returns a complex array of adjacent coherences with shape (steps, N-1) and a single-drive detuning axis in Hz. Its lifetime-closure and Doppler-average options are explicit; see the function docstring for parameter requirements.
 
----
+Installation
+The supplied code targets Python 3.10 or newer and was described as verified with Python 3.11. Use the Python executable belonging to the intended environment when creating and activating the virtual environment.
 
-## 📂 Architecture
-
-```text
-├── Rydberg_parameters.py   # Immutable state dataclasses, drive parameter models & plotting helpers
-├── Rydberg_lifetime.py     # ARC lifetime analyzer, BBR thermal rate builder & convergence checks
-├── Rydberg_ladder.py       # N-level ladder topology, E1 verification, excitation & decay ledgers
-├── Rydberg_solver.py       # Lindblad master equation builder, Doppler quadrature & QuTiP solver
-├── requirements.txt        # Pinned project dependencies
-└── README.md               # Architecture documentation
-```
-
-### Module Responsibilities
-
-| Module | Core Classes / Functions | Primary Responsibility |
-| :--- | :--- | :--- |
-| `Rydberg_parameters.py` | `QuantumState`, `LaserParameter`, `create_subplot` | Validates quantum numbers ($n, l, j, m_j$), laser beams ($P, w_0, \Delta\nu$), and RF fields ($E_{\mathrm{RF}}$). |
-| `Rydberg_lifetime.py` | `RydbergLifetimeAnalyzer` | Queries ARC for total state lifetimes, isolates spontaneous vs. thermal BBR rates, and performs $n$-cutoff convergence tests. |
-| `Rydberg_ladder.py` | `RydbergLadderSystem` | Generates excitation parameter ledgers, validates selection rules, and calculates sublevel-resolved decay matrices. |
-| `Rydberg_solver.py` | `EIT_builder`, `Hamil_builder`, `collapse_op`, `dephase` | Builds the Liouvillian superoperator, implements phase noise, runs Gauss-Hermite Doppler integration, and returns stationary coherences $\rho_{i, i+1}$. |
-
----
-
-## 🛠️ Installation
-
-Requires **Python $\ge$ 3.10** (verified on Python 3.11).
-
-```bash
-# Clone the repository
 git clone https://github.com/ammar31300/-Rydberg-Receiver-Simulation.git
 cd -Rydberg-Receiver-Simulation
-
-# Create and activate a virtual environment
 python -m venv .venv
-# Windows (PowerShell):
+Activate the environment, then install the runtime packages:
+
+# Windows PowerShell
 .venv\Scripts\Activate.ps1
-# Linux / macOS:
-source .venv/bin/activate
-
-# Install dependencies
 pip install numpy pandas scipy matplotlib qutip ARC-Alkali-Rydberg-Calculator
-```
+# Linux / macOS
+source .venv/bin/activate
+pip install numpy pandas scipy matplotlib qutip ARC-Alkali-Rydberg-Calculator
+ARC’s official documentation describes it as a Python package and recommends installation through pip; check that ARC, QuTiP, and the rest of the dependencies are installed into the same environment used to run the project.
 
----
-
-## 💻 Quickstart Workflows
-
-### 1. Generating Spectroscopy Ledgers for a 3-Level $^{87}\text{Rb}$ Ladder
-
-```python
+Quickstart Workflows
+1. Build a three-level rubidium ladder
 from arc import Rubidium87
 from Rydberg_parameters import QuantumState, LaserParameter
 from Rydberg_ladder import RydbergLadderSystem
 
-# Define 3-level atomic ladder: 5S_1/2 -> 5P_3/2 -> 40D_5/2
 states = [
-    QuantumState(n=5,  l_symbol='S', j_high=True, mj=0.5),
-    QuantumState(n=5,  l_symbol='P', j_high=True, mj=0.5),
+    QuantumState(n=5, l_symbol='S', j_high=True, mj=0.5),
+    QuantumState(n=5, l_symbol='P', j_high=True, mj=0.5),
     QuantumState(n=40, l_symbol='D', j_high=True, mj=0.5),
 ]
 
-# Configure probe (scanning) and coupling (fixed) drives
 fields = [
     LaserParameter(field_type='L', q=0, power_mw=0.05, waist_um=100.0,
                    linewidth_khz=50.0, temp_k=296.15, beam_propagation=1,
-                   on_resonance=False, is_scanning=True, detuning_range_mhz=(-40.0, 40.0)),
+                   on_resonance=False, is_scanning=True,
+                   detuning_range_mhz=(-40.0, 40.0)),
     LaserParameter(field_type='L', q=0, power_mw=40.0, waist_um=100.0,
-                   linewidth_khz=100.0, temp_k=296.15, beam_propagation=-1),
+                   linewidth_khz=100.0, temp_k=296.15,
+                   beam_propagation=-1),
 ]
 
-# Build ladder system and inspect excitation properties
 system = RydbergLadderSystem(Rubidium87(), states, fields)
-excitation_ledger = system.build_excitation_ledger()
-incoherent_ledger = system.build_incoherent_ledger()
+excitation = system.build_excitation_ledger()
+decay = system.build_incoherent_ledger()
+print(excitation[['transition', 'rabi_freq_rad_s', 'wavelength_nm']])
+2. Solve Doppler-averaged steady-state coherences
+A complete lifetime budget should correspond to the same atom, state basis, and temperature as the ladder. QuTiP’s steadystate accepts a Hamiltonian and collapse operators and constructs the corresponding Lindblad steady-state problem; solver methods and memory trade-offs are documented in the QuTiP steady-state guide.
 
-print(excitation_ledger[['transition', 'rabi_freq_rad_s', 'wavelength_nm']])
-```
-
-### 2. Computing Full Doppler-Averaged EIT Coherences via QuTiP
-
-```python
 from Rydberg_lifetime import RydbergLifetimeAnalyzer
 from Rydberg_solver import EIT_builder
 
-# Extract complete lifetime budget for basis closure
-lifetime_analyzer = RydbergLifetimeAnalyzer(
-    atoms=[system.atom],
-    states=states,
-    temperature_k=system.temperature_k,
-    n_cutoff_offset=25
+analyzer = RydbergLifetimeAnalyzer(
+    atoms=[system.atom], states=states,
+    temperature_k=system.temperature_k, n_cutoff_offset=25
 )
-total_rates_s_inv = lifetime_analyzer.get_total_decay_rates(atom_index=0)
+total_rates_s_inv = analyzer.get_total_decay_rates(atom_index=0)
 
-# Solve the steady-state Master Equation over probe detuning
 coherences, probe_axis_hz = EIT_builder(
     number_states=len(states),
-    Trans_wave=excitation_ledger,
-    decay_wave=incoherent_ledger,
-    laser_trans=fields,
+    Trans_wave=excitation, decay_wave=decay, laser_trans=fields,
     dephasing_step=501,
     total_decay_rates_s_inv=total_rates_s_inv,
-    external_return_state=0,          # Incoherent instantaneous return to ground state
+    external_return_state=0,
     doppler_average=True,
     mass_kg=system.get_ensemble_properties()['mass_kg'],
-    velocity_points=48
+    velocity_points=48,
 )
-
-# Extract probe coherence rho_12 (proportional to medium susceptibility / transmission)
 rho_probe = coherences[:, 0]
-```
-
-### 3. Plotting the Transmission Profile
-```python
+3. Plot the probe response
 import matplotlib.pyplot as plt
 import numpy as np
 
 probe_detuning_mhz = probe_axis_hz * 1e-6
-# Imaginary part of coherence governs absorption; real part governs dispersion
 probe_absorption = np.imag(rho_probe)
 
 plt.figure(figsize=(8, 4.5), dpi=120)
-plt.plot(probe_detuning_mhz, probe_absorption, color='#004B87', lw=1.8, label=r'Im($\rho_{12}$) [Absorption]')
-plt.title(r'Doppler-Averaged Rydberg EIT Spectrum (${}^{87}\mathrm{Rb}$)', fontsize=12, fontweight='bold')
-plt.xlabel('Probe Detuning [MHz]', fontsize=11)
-plt.ylabel(r'Coherence $\mathrm{Im}(\rho_{12})$', fontsize=11)
+plt.plot(probe_detuning_mhz, probe_absorption, color='#004B87', lw=1.8,
+         label=r'Im($\rho_{12}$) [absorption]')
+plt.xlabel('Probe detuning [MHz]')
+plt.ylabel(r'Im($\rho_{12}$)')
 plt.grid(True, linestyle='--', alpha=0.5)
-plt.legend(frameon=True)
+plt.legend()
 plt.tight_layout()
 plt.show()
-```
+Interpret the plotted coherence according to the project’s sign, rotating-frame, and optical-response conventions; the code returns coherences and does not by itself convert them into a calibrated transmission measurement.
 
----
+Metrological Capabilities
+To explore RF electrometry, extend the ladder with an RF-coupled state, for example $|1\rangle\rightarrow|2\rangle\rightarrow|3\rangle\xrightarrow{\mathrm{RF}}|4\rangle$. Under the relevant resonant-drive and line-shape assumptions, the AT splitting in ordinary frequency is $\Delta f_{\mathrm{AT}}=\Omega_{\mathrm{RF}}/(2\pi)$. Converting a fitted Rabi frequency to electric field requires the appropriate transition dipole moment and consistent units: $|E_{\mathrm{RF}}|=\hbar\Omega_{\mathrm{RF}}/|d_{34}|$.
 
-## 🔬 Metrological Capabilities & Pipeline Design
+The solver allows an explicit closed-basis approximation for qualitative exploration, or a lifetime-budget-based treatment that accounts for loss outside the selected basis. It does not eliminate the need to validate basis truncation, rate closure, scan convergence, or experimental geometry.
 
-1. **RF/Microwave Electrometry:**
-   - Extend the ladder to 4 levels ($|1\rangle \rightarrow |2\rangle \rightarrow |3\rangle \xrightarrow{\text{RF}} |4\rangle$) to observe resonant Autler-Townes splitting ($\Delta f_{\mathrm{AT}} = \Omega_{\mathrm{RF}} / 2\pi$).
-   - Direct SI-traceable field readout via $\lvert E_{\mathrm{RF}} \rvert = \hbar \Omega_{\mathrm{RF}} / \wp_{34}$.
-2. **Flexible Dissipation Engine:**
-   - Supports closed-basis assumptions (`allow_closed_model=True`) for fast qualitative exploration.
-   - Provides exact open-system dissipative bounds via ARC state lifetimes to prevent unphysical population trapping.
+Acknowledgments & References
+Project lead: Ammar (Alireza Torkashvand) — Quantum Engineering & Applied AI Research.
 
----
+License: MIT License (see LICENSE).
 
-## 👨‍💻 Research & Development
-
-**Lead Architect:** [Ammar (Alireza Torkashvand)](https://github.com/ammar31300)  
-*Quantum Engineering & Deep-Tech Applied AI Research*
-
----
-
-## 📜 License
-This project is open-source under the [MIT License](LICENSE).
+References
+Šibalić, N., Pritchard, J. D., Weatherill, K. J., & Adams, C. S. “ARC: An open-source library for calculating properties of alkali Rydberg atoms.” Computer Physics Communications 220, 319 (2017). ARC documentation and citation guidance.
+QuTiP developers. “Solving for Steady-State Solutions.” QuTiP 5.0.1 Documentation. Steady-state solver guide.

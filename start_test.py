@@ -29,8 +29,17 @@ def load_file(path: str, module_name: str):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--lifetime-file', default='script_2_replacement.py')
-    parser.add_argument('--solver-file', default='script_4_replacement.py')
+    folder = Path(__file__).resolve().parent
+
+    parser.add_argument(
+        '--lifetime-file',
+        default=str(folder / 'rydberg_lifetime.py'),
+    )
+    parser.add_argument(
+        '--solver-file',
+        default=str(folder / 'rydberg_solver.py'),
+    )
+
     parser.add_argument('--solve', action='store_true')
     parser.add_argument('--convergence', action='store_true')
     args = parser.parse_args()
